@@ -1,11 +1,14 @@
 use log::warn;
 use std::{
     fmt::Display,
+    panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
+    pin::pin,
     rc::Rc,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
+    task::{Context, Wake, Waker},
     thread::{self, ThreadId},
     time::Duration,
 };
@@ -91,6 +94,39 @@ impl BlockOnActiveGuard {
 impl Drop for BlockOnActiveGuard {
     fn drop(&mut self) {
         BLOCK_ON_ACTIVE.store(false, Ordering::Release);
+    }
+}
+
+struct BlockOnWaker {
+    sender: RunLoopSender,
+    queued: AtomicBool,
+}
+
+impl BlockOnWaker {
+    fn new(sender: RunLoopSender) -> Self {
+        Self {
+            sender,
+            queued: AtomicBool::new(true),
+        }
+    }
+
+    fn take_queued(&self) -> bool {
+        self.queued.swap(false, Ordering::AcqRel)
+    }
+}
+
+impl Wake for BlockOnWaker {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        // `block_on` は待機中に platform の poll ループへ制御を返しているため、
+        // future が wake されたら RunLoop をもう一度回すきっかけが必要になる。
+        // ここでは空コールバックを 1 件だけ再投入し、過剰な wake スパムを避ける。
+        if !self.queued.swap(true, Ordering::AcqRel) {
+            self.sender.send(|| {});
+        }
     }
 }
 
@@ -434,6 +470,9 @@ impl RunLoop {
     /// 一方で `pollster::block_on` など外部 executor は RunLoop を駆動しないため、
     /// 同じ依存関係ではデッドロックしうる。
     ///
+    /// `spawn` は使わず、呼び出し元の future をその場で直接 poll する。
+    /// そのため `RunLoop::spawn` と異なり、non-`'static` な借用を含む future も扱える。
+    ///
     /// `flutter` feature 有効時、通常のポーリング (`run` 用) は必要に応じてプラットフォーム既定の
     /// イベントキューへフォールバックする場合があるが、`block_on` では常に RunLoop 固有ソースのみを処理する。
     ///
@@ -453,50 +492,28 @@ impl RunLoop {
     /// ```
     pub fn block_on<F, T>(&self, future: F) -> T
     where
-        F: Future<Output = T> + 'static,
-        T: 'static,
+        F: Future<Output = T>,
     {
         let _block_on_guard = BlockOnActiveGuard::enter();
+        let block_on_waker = Arc::new(BlockOnWaker::new(self.new_sender()));
+        let waker = Waker::from(block_on_waker.clone());
+        let mut context = Context::from_waker(&waker);
+        let mut future = pin!(future);
 
-        let result: Arc<Mutex<Option<std::result::Result<T, String>>>> = Arc::new(Mutex::new(None));
-        let done = Arc::new(AtomicBool::new(false));
+        // stop() は使わず、待機対象 future が wake されるたびに再 poll しつつ
+        // RunLoop 固有ソースを回し続ける。
+        let mut poll_session = PollSession::new();
 
-        let result_clone = result.clone();
-        let done_clone = done.clone();
-
-        // Future をスポーンして結果を保存
-        let handle = self.spawn(future);
-        self.spawn(async move {
-            match handle.await {
-                Ok(value) => {
-                    *result_clone.lock().unwrap() = Some(Ok(value));
-                }
-                Err(crate::JoinError::Panic(msg)) => {
-                    *result_clone.lock().unwrap() = Some(Err(format!("Task panicked: {:?}", msg)));
-                }
-                Err(e) => {
-                    *result_clone.lock().unwrap() = Some(Err(format!("Task error: {:?}", e)));
+        loop {
+            if block_on_waker.take_queued() {
+                match catch_unwind(AssertUnwindSafe(|| future.as_mut().poll(&mut context))) {
+                    Ok(std::task::Poll::Ready(value)) => return value,
+                    Ok(std::task::Poll::Pending) => {}
+                    Err(panic_payload) => resume_unwind(panic_payload),
                 }
             }
-            done_clone.store(true, Ordering::Release);
-        });
 
-        // stop() を使わずにイベントを処理して待機
-        let mut poll_session = PollSession::new();
-        while !done.load(Ordering::Acquire) {
             self.inner.platform_run_loop.poll_once(&mut poll_session);
-        }
-
-        // 結果を取り出して返す
-        let result = result
-            .lock()
-            .unwrap()
-            .take()
-            .expect("Task completed but result is None");
-
-        match result {
-            Ok(value) => value,
-            Err(msg) => panic!("{}", msg),
         }
     }
 
@@ -793,6 +810,23 @@ mod tests {
 
     #[test]
     #[serial]
+    fn test_block_on_drives_spawned_tasks() {
+        RunLoop::init().unwrap();
+
+        // `block_on` 待機中も RunLoop が回り続け、別途 spawn されたタスクが進行できることを確認。
+        let handle = RunLoop::current().spawn(async move {
+            RunLoop::current().delay(Duration::from_millis(20)).await;
+            123
+        });
+
+        let result = RunLoop::current().block_on(async move { handle.await.unwrap() });
+
+        assert_eq!(result, 123);
+        RunLoop::deinit();
+    }
+
+    #[test]
+    #[serial]
     fn test_block_on_nested() {
         // 前のテストの影響を排除するため ensure を使用
         RunLoop::ensure_run_loop_on_current_thread().unwrap();
@@ -824,5 +858,50 @@ mod tests {
 
         RunLoop::deinit();
         assert!(result.is_err());
+    }
+
+    #[test]
+    #[serial]
+    fn test_block_on_recovers_after_panic() {
+        RunLoop::ensure_run_loop_on_current_thread().unwrap();
+
+        // panic で `block_on` を抜けた後もネスト判定フラグが解除され、次回呼び出しが正常動作することを確認。
+        let panic_result = std::panic::catch_unwind(|| {
+            RunLoop::current().block_on(async {
+                panic!("Task panicked");
+            });
+        });
+        assert!(panic_result.is_err());
+
+        let result = RunLoop::current().block_on(async { 7 });
+        assert_eq!(result, 7);
+
+        RunLoop::deinit();
+    }
+
+    #[test]
+    #[serial]
+    fn test_block_on_non_static_future() {
+        RunLoop::init().unwrap();
+
+        struct Counter {
+            value: u32,
+        }
+
+        impl Counter {
+            async fn increment_and_get(&mut self) -> u32 {
+                RunLoop::current().delay(Duration::from_millis(10)).await;
+                self.value += 1;
+                self.value
+            }
+        }
+
+        // `&mut self` を借用した non-`'static` future を `block_on` に渡せることを確認。
+        let mut counter = Counter { value: 41 };
+        let result = RunLoop::current().block_on(counter.increment_and_get());
+
+        assert_eq!(result, 42);
+        assert_eq!(counter.value, 42);
+        RunLoop::deinit();
     }
 }
