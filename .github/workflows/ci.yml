@@ -23,7 +23,7 @@ jobs:
             libatk1.0-dev \
             libcairo2-dev
       - name: Cargo test
-        run: cargo test --all-targets
+        run: xvfb-run -a cargo test --all-targets
 
   test-macos:
     runs-on: macos-latest
