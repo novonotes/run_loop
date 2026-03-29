@@ -495,6 +495,11 @@ impl RunLoop {
         F: Future<Output = T>,
     {
         let _block_on_guard = BlockOnActiveGuard::enter();
+
+        if self.inner.has_shutdown.load(Ordering::SeqCst) {
+            panic!("Cannot block on shut down RunLoop");
+        }
+
         let block_on_waker = Arc::new(BlockOnWaker::new(self.new_sender()));
         let waker = Waker::from(block_on_waker.clone());
         let mut context = Context::from_waker(&waker);
@@ -903,5 +908,20 @@ mod tests {
         assert_eq!(result, 42);
         assert_eq!(counter.value, 42);
         RunLoop::deinit();
+    }
+
+    #[test]
+    #[serial]
+    fn test_block_on_after_deinit_panics() {
+        RunLoop::init().unwrap();
+        let run_loop = RunLoop::current();
+
+        RunLoop::deinit();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_loop.block_on(async { 1 });
+        }));
+
+        assert!(result.is_err());
     }
 }
