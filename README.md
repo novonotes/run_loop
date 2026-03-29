@@ -107,3 +107,9 @@ run_loop のテストヘルパーとテストハーネスの使い方につい�
 ## ライセンス
 
 MIT License（オリジナルプロジェクトと同じ）
+
+## Upstream
+
+このリポジトリは [`irondash`](https://github.com/irondash/irondash) の
+`run_loop` クレートをベースにしたフォークです。
+帰属情報の詳細は [NOTICE.md](./NOTICE.md) を参照してください。
