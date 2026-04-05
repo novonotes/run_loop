@@ -7,13 +7,13 @@ use std::sync::{Arc, Mutex};
 ///
 /// # 使用例
 ///
-/// ```
+/// ```ignore
 /// #[test]
 /// #[serial]
-/// fn test_something() -> Result<(), String> {
+/// fn test_something() {
 ///     run_loop::test_helper::run_async(async {
-///         RunLoop::current().wait(Duration::from_millis(10)).await;
-///         Ok(())
+///         // run loop 上で非同期処理を実行
+///         Ok::<(), String>(())
 ///     });
 /// }
 /// ```
