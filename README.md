@@ -1,7 +1,13 @@
 # novonotes_run_loop
 
 プラットフォーム独立なイベントループインターフェースを提供する Rust クレート。
-[irondash_run_loop](https://github.com/irondash/irondash/tree/main/run_loop) をベースに、DLL 環境での安全性とエラーハンドリングを強化したフォークです。
+[irondash_run_loop](https://github.com/irondash/irondash/tree/main/run_loop) をベースに、DLL 環境での安全性やエラーハンドリングなどを強化したフォークです。
+
+## 目的
+
+オーディオプラグイン開発における非同期タスク管理での使用を想定。
+ホストアプリケーションのメインスレッドをブロックすることなく、そのスレッドのイベントループへのアクセスを提供する。
+これにより、プラグイン起点でメインスレッドのタスクを起動・スケジューリングすることが可能になる。
 
 ## 特徴
 
