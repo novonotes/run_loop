@@ -20,12 +20,12 @@ impl WindowClass {
     }
 
     fn new() -> Self {
-        // オーディオプラグインなどの複数 DLL から同時に利用される場合でも、
-        // 各DLLが独自のウィンドウクラス名を持つように、
-        // タイムスタンプを使用して一意の名前を生成する
+        // Generate a unique name using a timestamp so that each DLL gets its own
+        // Window Class name even when multiple DLLs (e.g. audio plugins) use this crate
+        // simultaneously.
         //
-        // 同じ DLL を unload/load 繰り返した場合にも、クリーンな実行環境にするため、
-        // DLL の ID ではなく、タイムスタンプを使用。
+        // A timestamp is used instead of the DLL's identity so that repeated
+        // unload/reload cycles always start with a clean execution environment.
         let timestamp_suffix = crate::util::get_timestamp_suffix();
         let class_name = format!("IrondashCoreMessageWindow_{}", timestamp_suffix);
         let res = WindowClass {

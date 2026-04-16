@@ -1,10 +1,10 @@
-// カスタムテストハーネス - GUI統合テスト用のヘルパー
+// Custom test harness — helper for GUI integration tests
 use crate::RunLoop;
 use log::{error, info};
 
-/// 複数のGUIテストを順次実行するハーネス
-/// GUI 関連の操作には、必ず main スレッドで実行しなければいけない処理があります。
-/// そのような処理のテストは標準のテストハーネスでは難しいため、このハーネスを使ってください。
+/// Harness that runs multiple GUI tests sequentially.
+/// Some GUI-related operations must run on the main thread and are not
+/// straightforward to test with the standard harness. Use this harness for those cases.
 ///
 /// # Example
 /// ```ignore
@@ -13,9 +13,9 @@ use log::{error, info};
 ///     ("test2", test_function2),
 /// ]);
 /// ```
-/// このハーネスを利用する場合、標準ハーネスを無効化する必要があります。
+/// When using this harness, the standard harness must be disabled.
 ///
-/// Cargo.toml の例
+/// Example Cargo.toml entry:
 /// ```ignore
 /// [[test]]
 /// name = "wxp_webview_test"
@@ -29,7 +29,7 @@ where
 {
     info!("Running GUI tests on main thread...");
 
-    // RunLoopを初期化
+    // Initialize RunLoop
     match RunLoop::init() {
         Ok(_) => {}
         Err(e) => {
@@ -52,7 +52,7 @@ where
         }
     }
 
-    // RunLoopをクリーンアップ
+    // Clean up RunLoop
     RunLoop::deinit();
 
     if failed {

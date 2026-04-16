@@ -1,111 +1,115 @@
-# run_loop 保守・設計メモ
+# run_loop Maintainer & Design Notes
 
-この文書は **保守・移植を行う人向け** です。利用者向けのドキュメントは
-[README.md](../README.md) と [lib.rs のクレートドキュメント](../src/lib.rs) を参照してください。
+This document is intended for **maintainers and porters**. For user-facing documentation, see
+[README.md](../README.md) and the [lib.rs crate docs](../src/lib.rs).
 
----
-
-## upstream との関係
-
-[irondash_run_loop](https://github.com/irondash/irondash/tree/main/run_loop) をベースに
-フォークしたクレートですが、**upstream との継続的な sync は行わない方針**です。
-
-irondash はマルチプラットフォーム Flutter プラグイン開発を目的としていますが、
-このクレートはオーディオプラグイン（CLAP/VST3）固有の要件（DLL セーフティ、
-DAW ホストへの panic 伝播防止など）に最適化する方向で独自に進化させます。
+> Japanese version: [maintainers_JA.md](./maintainers_JA.md)
 
 ---
 
-## irondash からの主な差分
+## Relationship with upstream
 
-| 変更 | 理由 |
+This crate is forked from [irondash_run_loop](https://github.com/irondash/irondash/tree/main/run_loop),
+but **ongoing sync with upstream is intentionally not performed**.
+
+irondash targets multi-platform Flutter plugin development, whereas this crate is evolved
+independently to optimize for audio plugin (CLAP/VST3) specific requirements such as DLL safety
+and preventing panic propagation into the DAW host.
+
+---
+
+## Key differences from irondash
+
+| Change | Reason |
 |---|---|
-| thread-local ストレージを廃止、グローバル singleton に変更 | DLL unload 時の TLS destructor 問題を回避（後述） |
-| `init()` / `deinit()` の参照カウント方式 | CLAP の `init` / `deinit` と対応させるため（後述） |
-| Win32 の Window Class 名、CFRunLoop の RunLoopMode 名を固有名に変更 | 同一プロセスに複数 DLL が読み込まれたときの名前衝突を回避 |
-| `abort()` メソッドを追加 | タスクの制御された中断が可能に |
-| task 内 panic を `catch_unwind` でキャッチ | DAW ホストを巻き込まないため（後述） |
-| `block_on()` を追加 | CLAP GUI スレッドで同期的に Future を待機するため（後述） |
+| Removed thread-local storage; replaced with a global singleton | Avoids TLS destructor issues on DLL unload (see below) |
+| Reference-counted `init()` / `deinit()` | Maps to CLAP `init` / `deinit` lifecycle (see below) |
+| Unique Win32 Window Class name and CFRunLoop RunLoopMode name | Prevents name collisions when multiple DLLs are loaded in the same process |
+| Added `abort()` method | Enables controlled task cancellation |
+| Panic inside a task is caught with `catch_unwind` | Prevents taking down the DAW host (see below) |
+| Added `block_on()` | Allows synchronously awaiting a Future on the CLAP GUI thread (see below) |
 
 ---
 
-## singleton 制約
+## Singleton constraint
 
-プロセス内で run loop スレッドは **常に 1 本だけ** という制約があります。
+There is a hard constraint that **only one run loop thread may exist in the process at any time**.
 
-Darwin の `CFRunLoop` や Linux の `GMainContext` は「現在のスレッドの run loop」
-というスレッドローカルな概念を前提とした API です。複数スレッドがそれぞれ
-run loop を持つ設計も可能ですが、オーディオプラグインでは「GUI スレッド = run loop
-スレッド」という対応で十分であり、複雑さを増やすメリットがありません。
+`CFRunLoop` on Darwin and `GMainContext` on Linux are APIs that assume a thread-local concept of
+"the current thread's run loop". It would be possible to design a system where multiple threads each
+have their own run loop, but for audio plugins the mapping of "GUI thread = run loop thread" is
+sufficient, and adding that complexity brings no benefit.
 
-テスト環境では任意のスレッドを run loop スレッドに指定できるため、
-必ず `#[serial_test::serial]` で直列化してください。
-
----
-
-## `init` / `deinit` の設計
-
-参照カウント方式（`INIT_COUNT: AtomicUsize`）を採用しています。
-
-CLAP / VST3 では `InitDll` / `ExitDll`（または `init` / `deinit`）が
-**複数回呼ばれることがある**ためです（複数プラグインが同一 DLL を参照する場合など）。
-`INIT_COUNT` が 0→1 になったときに実際の初期化、1→0 になったときにクリーンアップが走ります。
-
-誤用パターン:
-- `deinit()` を `init()` より多く呼ぶ → カウントがアンダーフローし、次の `init()` で
-  クリーンアップ済みインスタンスを参照するリスクがあります（`fetch_sub` の wrap-around のため検出が困難）。
-- `deinit()` を呼ばずに DLL がアンロードされる → `RunLoopInner::drop` でフォールバック処理が
-  走りますが、ベストエフォートです。shutdown パスでは panic を起こさないことが重要です。
+In test environments any thread can be designated the run loop thread, so always serialize tests
+with `#[serial_test::serial]`.
 
 ---
 
-## TLS を避けている理由
+## `init` / `deinit` design
 
-thread-local ストレージは DLL unload 時の destructor の順序・タイミングの制御が難しいです。
-特に Windows では `DLL_THREAD_DETACH` / `DLL_PROCESS_DETACH` の順序がホスト依存であり、
-他の TLS にアクセスする destructor がクラッシュする既知の問題があります。
+A reference-counting scheme (`INIT_COUNT: AtomicUsize`) is used.
 
-また、同一プロセス内で別 DLL やホスト側コードが同じスレッドを使い続ける状況では、
-TLS に保持していた値がアンロード済み DLL 側のコード・データを参照してしまう危険があります。
+CLAP / VST3 can call `InitDll` / `ExitDll` (or `init` / `deinit`) **multiple times**
+(e.g., when multiple plugins reference the same DLL).
+Actual initialization runs when `INIT_COUNT` transitions from 0→1; cleanup runs when it
+transitions from 1→0.
 
-そのため、`RUN_LOOP_INSTANCE` と `RUN_LOOP_THREAD_ID` は `static` な
-グローバル変数（`Mutex` でガード）として保持しています。
-
----
-
-## `block_on` の意図
-
-`pollster::block_on` などの外部 executor は **run loop を駆動しません**。
-そのため、`spawn` で投入したタスクが完了するまで待ちたい場合、外部 executor を使うと
-デッドロックします。
-
-`RunLoop::block_on` はプラットフォーム固有のポーリング（`platform_run_loop.poll_once`）を
-回し続けながら Future を poll します。これにより、待機対象の Future が run loop 上の
-別タスクの完了に依存していても正しく進行できます。
-
-ネストした `block_on` は `BLOCK_ON_ACTIVE` フラグで検出し、パニックさせます（再入によるデッドロックを防ぐため）。
+Misuse patterns:
+- Calling `deinit()` more times than `init()` → The count underflows, risking a reference to a
+  cleaned-up instance on the next `init()` (hard to detect due to `fetch_sub` wrap-around).
+- DLL unloaded without calling `deinit()` → `RunLoopInner::drop` runs a best-effort fallback, but
+  it is best-effort only. It is critical that the shutdown path does not panic.
 
 ---
 
-## platform backend の責務
+## Why TLS is avoided
 
-各プラットフォームの backend（`src/platform/`）は以下を実装します：
+Thread-local storage makes it difficult to control the order and timing of destructors on DLL
+unload. On Windows in particular, the ordering of `DLL_THREAD_DETACH` / `DLL_PROCESS_DETACH` is
+host-dependent, and destructors that access other TLS values are a known source of crashes.
 
-- `PlatformRunLoop` — run loop の作成・破棄・ポーリング（`poll_once`）
-- `PlatformRunLoopSender` — 他スレッドからコールバックをキューに投入
-- `PollSession` — `block_on` 内でのポーリング状態管理
+Additionally, in scenarios where the same thread is shared between a different DLL or the host
+code, values held in TLS may end up referencing code or data from the already-unloaded DLL.
 
-新しいプラットフォームを追加する場合は `src/platform/mod.rs` の
-`cfg` 分岐と `PollSession` の実装を参照してください。
+For these reasons `RUN_LOOP_INSTANCE` and `RUN_LOOP_THREAD_ID` are held as `static` global
+variables (guarded by `Mutex`).
 
 ---
 
-## 変更時の注意
+## Intent of `block_on`
 
-- **shutdown パスで panic しない**: DAW ホストを巻き込みます。`catch_unwind` で囲むか、
-  panic が起きない実装にしてください。
-- **main thread 判定ロジックを軽率に変えない**: `RUN_LOOP_THREAD_ID` の取得・比較は
-  複数箇所で行われており、変更すると `sender()`、`current()`、`is_run_loop_thread()` の
-  整合性が崩れます。
-- **Win32 の Window Class 名・CFRunLoop の RunLoopMode 名はユニークに保つ**:
-  `irondash` や他ライブラリとの名前衝突を防ぐため、クレート固有のプレフィックスを維持してください。
+External executors such as `pollster::block_on` **do not drive the run loop**.
+Therefore, if you want to wait for a task submitted via `spawn` to complete, using an external
+executor will deadlock.
+
+`RunLoop::block_on` continuously calls the platform-specific poll (`platform_run_loop.poll_once`)
+while polling the Future. This allows the Future being awaited to make progress even when it
+depends on another task completing on the run loop.
+
+Nested `block_on` calls are detected by the `BLOCK_ON_ACTIVE` flag and will panic (to prevent
+deadlocks from re-entrancy).
+
+---
+
+## Responsibilities of the platform backend
+
+Each platform backend (`src/platform/`) implements the following:
+
+- `PlatformRunLoop` — creation, teardown, and polling of the run loop (`poll_once`)
+- `PlatformRunLoopSender` — enqueuing callbacks from other threads
+- `PollSession` — polling state management inside `block_on`
+
+When adding a new platform, refer to the `cfg` branches in `src/platform/mod.rs` and the
+`PollSession` implementation.
+
+---
+
+## Change guidelines
+
+- **Do not panic in the shutdown path**: It will take down the DAW host. Wrap with `catch_unwind`
+  or ensure the implementation cannot panic.
+- **Do not carelessly change the main-thread detection logic**: `RUN_LOOP_THREAD_ID` is acquired
+  and compared in multiple places; changing it will break the consistency of `sender()`,
+  `current()`, and `is_run_loop_thread()`.
+- **Keep Win32 Window Class names and CFRunLoop RunLoopMode names unique**: Maintain the
+  crate-specific prefix to prevent name collisions with `irondash` and other libraries.

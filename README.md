@@ -1,77 +1,79 @@
 # novonotes_run_loop
 
-プラットフォーム独立なランループインターフェースを提供する Rust クレート。
-[irondash_run_loop](https://github.com/irondash/irondash/tree/main/run_loop) をベースに、DLL 環境での安全性やエラーハンドリングなどを強化したフォークです。
+A platform-independent run loop interface for Rust.
+A fork of [irondash_run_loop](https://github.com/irondash/irondash/tree/main/run_loop) with enhanced safety and error handling for DLL environments.
 
-## 目的
+> Japanese version: [README_JA.md](./README_JA.md)
 
-オーディオプラグイン開発における非同期タスク管理での使用を想定。
-ホストアプリケーションのメインスレッドをブロックすることなく、そのスレッドのランループへのアクセスを提供する。
-これにより、プラグイン起点でメインスレッドのタスクを起動・スケジューリングすることが可能になる。
+## Purpose
 
-## 特徴
+Designed for async task management in audio plugin development.
+Provides access to the host application's main thread run loop without blocking it,
+enabling plugins to schedule and launch tasks on the main thread.
 
-- **マルチプラットフォーム対応**: iOS/macOS、Android、Linux、Windows のネイティブランループを統一 API で操作
-- **非同期タスク管理**: Rust 標準の async/await パターンをサポート
-- **スレッド間通信**: 安全なメッセージパッシング機構
-- **DLL/オーディオプラグイン対応**: 他社アプリケーションにリンクされた DLL で動作するユースケースをサポート
+## Features
 
-## 基本的な使い方
+- **Multi-platform**: Unified API over native run loops on iOS/macOS, Android, Linux, and Windows
+- **Async task management**: Supports Rust's standard `async`/`await` patterns
+- **Cross-thread communication**: Safe message-passing mechanism
+- **DLL / audio plugin support**: Handles use cases where the library runs inside a DLL linked into a third-party application
 
-### 初期化
+## Basic Usage
+
+### Initialization
 
 ```rust
 use novonotes_run_loop::{RunLoop, JoinError};
 
-// アプリケーション/DLL の初期化処理で実行
-RunLoop::init().expect("RunLoop の初期化に失敗");
+// Call during application/DLL initialization
+RunLoop::init().expect("Failed to initialize RunLoop");
 
-// 現在のスレッドのRunLoopを取得
+// Get the RunLoop for the current thread
 let run_loop = RunLoop::current();
 
-// アプリケーション/DLL の終了処理で実行
+// Call during application/DLL teardown
 RunLoop::deinit();
 ```
 
-### タスクのスケジューリング
+### Scheduling Tasks
 
 ```rust
 use std::time::Duration;
 
 let run_loop = RunLoop::current();
 
-// 10秒後の実行をスケジュール
+// Schedule execution after 10 seconds
 let handle = run_loop.schedule(Duration::from_secs(10), || {
-    println!("10秒経過しました");
+    println!("10 seconds have passed");
 });
 
-// handleをドロップするとタイマーがキャンセルされる
-// キャンセルを防ぐには detach() を使用
+// Dropping the handle cancels the timer.
+// Use detach() to prevent cancellation.
 handle.detach();
 ```
 
-### 非同期タスクの実行
+### Running Async Tasks
 
 ```rust
-// タスクをスポーンして結果を待機
+// Spawn a task and await its result
 let handle = run_loop.spawn(async {
-    // 非同期処理
+    // Async work
     RunLoop::current().delay(Duration::from_secs(1)).await;
     42
 });
 
-// 結果の取得（エラーハンドリング付き）
+// Retrieve the result with error handling
 match handle.await {
-    Ok(value) => println!("結果: {}", value),  // `結果: 42` が出力されるはず。
-    Err(JoinError::Aborted) => println!("タスクが中断されました"),
-    Err(JoinError::Panic(_)) => println!("タスクがパニックしました"),
+    Ok(value) => println!("Result: {}", value),  // Should print `Result: 42`
+    Err(JoinError::Aborted) => println!("Task was aborted"),
+    Err(JoinError::Panic(_)) => println!("Task panicked"),
 }
 ```
 
-### スレッド間通信
+### Cross-Thread Communication
 
-RunLoop は初期化されたスレッドを RunLoop スレッドとしてマークします。
-別スレッドから RunLoop スレッドへのコールバック送信は `RunLoop::sender()` を使用します。
+`RunLoop::init()` marks the current thread as the run loop thread.
+Use `RunLoop::sender()` to send callbacks from other threads to the run loop thread.
 
 ```rust
 use std::thread;
@@ -79,52 +81,51 @@ use std::thread;
 fn main() {
     assert!(RunLoop::is_run_loop_thread());
 
-    // 別スレッドからRunLoopスレッドにコールバックを送信
+    // Send a callback from another thread to the run loop thread
     thread::spawn(move || {
         let sender = RunLoop::sender();
-        // 送信されたコールバックは RunLoop スレッドで非同期実行されます。
+        // Sent callbacks are executed asynchronously on the run loop thread.
         sender.send(|| {
             assert!(RunLoop::is_run_loop_thread());
-            println!("RunLoopスレッドで実行");
+            println!("Executing on run loop thread");
         });
     });
 }
 ```
 
 
-## プラットフォーム別の実装
+## Platform Implementations
 
-| プラットフォーム | 基盤技術           | 特徴                                              |
-| ---------------- | ------------------ | ------------------------------------------------- |
-| iOS/macOS        | CFRunLoop          | Core Foundation ベース、カスタム RunLoopMode 使用 |
-| Android          | ALooper            | NDK の ALooper、timerfd でタイマー実装            |
-| Linux            | GMainContext       | GLib/GTK 統合、g_timeout_source でタイマー        |
-| Windows          | Win32 Message Loop | 隠しウィンドウでメッセージ処理                    |
+| Platform  | Underlying Technology | Notes                                                    |
+| --------- | --------------------- | -------------------------------------------------------- |
+| iOS/macOS | CFRunLoop             | Core Foundation based, uses a custom RunLoopMode         |
+| Android   | ALooper               | NDK ALooper, timer implemented with timerfd              |
+| Linux     | GMainContext          | GLib/GTK integration, timer via g_timeout_source         |
+| Windows   | Win32 Message Loop    | Message processing via a hidden window                   |
 
-## 動作モデル
+## Execution Model
 
-`init()` は現在のスレッドにネイティブループの基盤への参照を取得（存在しない場合は新規作成）します。スタンドアロンアプリでは自前での `run()` 呼び出しによって、ランループを駆動する必要があります。プラグイン環境ではホストが既にループを駆動しているため、`run()` の呼び出しは不要です。その後のコールバックやタイマー登録は、誰がループを駆動しているかに関係なく同じように動作します。
+`init()` acquires a reference to the native loop infrastructure on the current thread (creating one if none exists). In standalone applications, you must call `run()` yourself to drive the loop. In plugin environments the host already drives the loop, so `run()` is unnecessary. Callbacks and timer registrations behave identically regardless of who drives the loop.
 
-| パターン | `run()` | 誰がループを回すか |
-|---|---|---|
-| スタンドアロンアプリ | 呼ぶ | `run()` 自身 |
-| プラグイン（CLAP/VST3 等） | 呼ばない | ホスト（DAW）の既存ループ |
+| Pattern               | `run()` | Who drives the loop       |
+|-----------------------|---------|---------------------------|
+| Standalone app        | call    | `run()` itself            |
+| Plugin (CLAP/VST3 …)  | skip    | Host (DAW) existing loop  |
 
-## irondash_run_loop との主な違い
+## Differences from irondash_run_loop
 
-1. **DLL セーフティ**: thread-local ストレージを使用しないように変更。初期化・終了処理を見直し。複数 DLL 間での Win32 の Window Class 名や CFRunLoop の RunLoopMode 名の衝突を回避。
-2. **明示的な abort() メソッド**: タスクの制御された中断が可能
-3. **パニックリカバリ**: タスク内のパニックをキャッチして報告
+1. **DLL safety**: Removed thread-local storage. Revised initialization/teardown. Avoids name collisions for Win32 Window Class names and CFRunLoop RunLoopMode names across multiple DLLs.
+2. **Explicit `abort()` method**: Allows controlled task cancellation.
+3. **Panic recovery**: Catches and reports panics that occur inside tasks.
 
-## テスト
+## Testing
 
-run_loop のテストヘルパーとテストハーネスの使い方については、[テストガイド](docs/testing.md)を参照してください。
+For information on using the test helpers and test harness, see the [Testing Guide](docs/testing.md).
 
-## ライセンス
+## License
 
-MIT License（オリジナルプロジェクトと同じ）
+MIT License (same as the original project)
 
 ## Upstream
 
-このリポジトリは [`irondash`](https://github.com/irondash/irondash) の
-`run_loop` クレートをベースにしたフォークです。
+This repository is a fork of the `run_loop` crate from [`irondash`](https://github.com/irondash/irondash).

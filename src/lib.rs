@@ -1,16 +1,16 @@
-//! プラットフォーム固有のネイティブ run loop（CFRunLoop / ALooper / GMainContext / Win32
-//! メッセージループ）を共通の API で扱うクレートです。
-//! [irondash_run_loop](https://github.com/irondash/irondash) をベースに、
-//! DLL・オーディオプラグイン環境での安全性を強化したフォークです。
+//! A crate that provides a unified API over platform-specific native run loops
+//! (CFRunLoop / ALooper / GMainContext / Win32 message loop).
+//! A fork of [irondash_run_loop](https://github.com/irondash/irondash) with enhanced safety
+//! for DLL and audio plugin environments.
 //!
-//! 使い方・サンプルコードは [README](https://github.com/novonotes/run_loop) を参照してください。
-//! 設計の背景は [docs/maintainers.md](../docs/maintainers.md) を参照してください。
+//! For usage examples see the [README](https://github.com/novonotes/run_loop).
+//! For design background see [docs/maintainers.md](../docs/maintainers.md).
 //!
-//! ## 注意点
+//! ## Notes
 //!
-//! - [`RunLoop::current()`] は run loop スレッドからのみ呼び出せます。他スレッドからは [`RunLoop::sender()`] を使ってください。
-//! - `init()` と `deinit()` は必ず対にしてください（内部で参照カウントを管理しています）。
-//! - テストは singleton 制約があるため `#[serial_test::serial]` で直列化が必要です（[`test_harness`] 参照）。
+//! - [`RunLoop::current()`] may only be called from the run loop thread. Use [`RunLoop::sender()`] from other threads.
+//! - Always pair `init()` with `deinit()` (the implementation uses reference counting internally).
+//! - Tests have a singleton constraint and must be serialized with `#[serial_test::serial]` (see [`test_harness`]).
 
 #![allow(clippy::new_without_default)]
 

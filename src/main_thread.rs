@@ -45,7 +45,7 @@ impl MainThreadFacilitator {
         }
     }
 
-    /// 現在のスレッドの設定をリセットする
+    /// Resets the facilitator for the current thread.
     pub(crate) fn reset() {
         let mut facilitator = MAIN_THREAD_FACILITATOR.lock().unwrap();
         *facilitator = None;

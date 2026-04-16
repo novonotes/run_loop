@@ -40,10 +40,10 @@ struct State {
 type SenderCallback = Box<dyn FnOnce() + Send>;
 
 pub struct PollSession {
-    /// `RunLoop::block_on` 中のポーリング状態。
+    /// Polling state for `RunLoop::block_on`.
     ///
-    /// 最初の短時間は非ブロッキングで積極的にポーリングし、
-    /// 一定時間経過後は同じ looper でブロッキング待機に切り替える。
+    /// For the first few milliseconds, poll non-blocking aggressively.
+    /// After that, switch to blocking wait on the same looper.
     start: Instant,
     timed_out: bool,
 }

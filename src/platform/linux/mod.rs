@@ -23,10 +23,10 @@ pub type HandleType = usize;
 pub const INVALID_HANDLE: HandleType = 0;
 
 pub struct PollSession {
-    /// `RunLoop::block_on` 中のポーリング状態。
+    /// Polling state for `RunLoop::block_on`.
     ///
-    /// 最初の短時間は非ブロッキングで積極的にポーリングし、
-    /// 一定時間経過後は同じコンテキストでブロッキング待機に切り替える。
+    /// For the first few milliseconds, poll non-blocking aggressively.
+    /// After that, switch to blocking wait on the same context.
     start: Instant,
     timed_out: bool,
 }
@@ -240,11 +240,11 @@ impl PlatformRunLoop {
 
     pub fn poll_once(&self, poll_session: &mut PollSession) {
         if !poll_session.timed_out {
-            // 最初の 6ms は非ブロッキングで積極的に poll
+            // For the first 6ms, poll non-blocking aggressively
             unsafe { g_main_context_iteration(self.context.0, GFALSE) };
             poll_session.timed_out = poll_session.start.elapsed() >= Duration::from_millis(6);
         } else {
-            // その後は同じコンテキストでブロッキング待機
+            // After that, switch to blocking wait on the same context
             unsafe { g_main_context_iteration(self.context.0, GTRUE) };
         }
     }
@@ -317,7 +317,7 @@ impl PlatformRunLoopSender {
         // which is not expected and may lead to deadlocks.
         if get_system_thread_id() == self.thread_id {
             assert!(unsafe { g_main_context_is_owner(self.context.0) == GTRUE });
-            // 直接 g_timeout_source を作成してスケジュール（RunLoop::current() を使わない）
+            // Schedule directly via g_timeout_source without using RunLoop::current()
             unsafe {
                 unsafe extern "C" fn sender_trampoline<F: FnOnce() + 'static>(
                     func: gpointer,

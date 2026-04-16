@@ -17,28 +17,28 @@ use futures::{
 
 use crate::RunLoopSender;
 
-// タスクのabort機能を抽象化するトレイト
+// Trait that abstracts the abort capability of a task
 pub(crate) trait AbortableTask: Send + Sync {
-    #[allow(dead_code)] // Drop実装でのみ使用
+    #[allow(dead_code)] // only used in Drop impl
     fn abort(&self);
 }
 
-/// Task 実行中に発生するエラー
+/// Errors that can occur while a Task is running.
 #[derive(Debug)]
 pub enum JoinError {
-    /// タスクが abort() で中断された
+    /// The task was cancelled via `abort()`.
     Aborted,
-    /// タスク内で panic が発生した
+    /// A panic occurred inside the task.
     Panic(Box<dyn Any + Send>),
 }
 
 impl JoinError {
-    /// エラーがキャンセルによるものかチェック
+    /// Returns `true` if the error was caused by a cancellation.
     pub fn is_aborted(&self) -> bool {
         matches!(self, Self::Aborted)
     }
 
-    /// エラーが panic によるものかチェック
+    /// Returns `true` if the error was caused by a panic.
     pub fn is_panic(&self) -> bool {
         matches!(self, Self::Panic(_))
     }
@@ -84,7 +84,7 @@ impl<T: 'static> Task<T> {
             let future_opt = &mut *self.future.get();
             match future_opt {
                 Some(future) => {
-                    // panic をキャッチしてエラーとして扱う
+                    // Catch panics and treat them as an error
                     match catch_unwind(AssertUnwindSafe(|| future.as_mut().poll(context))) {
                         Ok(Poll::Ready(value)) => Poll::Ready(Ok(value)),
                         Ok(Poll::Pending) => Poll::Pending,
@@ -98,7 +98,7 @@ impl<T: 'static> Task<T> {
 
     pub(crate) fn abort(&self) {
         self.aborted.store(true, Ordering::Release);
-        // Future を drop してリソースを解放
+        // Drop the Future to release resources
         unsafe {
             let future_opt = &mut *self.future.get();
             *future_opt = None;

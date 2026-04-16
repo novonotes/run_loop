@@ -8,7 +8,7 @@ pub use future_completer::*;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// ミリ秒精度のタイムスタンプを大文字英数字で圧縮した文字列を返す
+/// Returns the current millisecond timestamp encoded as a base-36 uppercase string.
 pub fn get_timestamp_suffix() -> String {
     const BASE36_CHARS: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
@@ -41,19 +41,19 @@ mod tests {
 
     #[test]
     fn test_get_timestamp_suffix() {
-        // 空でない文字列を返すこと
+        // Should return a non-empty string
         let suffix = get_timestamp_suffix();
         debug!("suffix: {}", suffix);
         assert!(!suffix.is_empty());
 
-        // 大文字英数字のみで構成されていること
+        // Should consist only of uppercase alphanumeric characters
         assert!(
             suffix.chars().all(
                 |c| c.is_ascii_alphanumeric() && (c.is_ascii_digit() || c.is_ascii_uppercase())
             )
         );
 
-        // 連続して呼び出すと異なる値を返すこと（ミリ秒精度なので sleep を入れる）
+        // Consecutive calls should return different values (millisecond precision, so sleep)
         let suffix1 = get_timestamp_suffix();
         std::thread::sleep(std::time::Duration::from_millis(2));
         let suffix2 = get_timestamp_suffix();

@@ -11,12 +11,12 @@ fn test_task_normal_completion() {
     let result = Arc::new(Mutex::new(None));
     let result_clone = result.clone();
 
-    // spawn 関数を使ってタスクを起動
+    // Launch a task using the spawn function
     spawn(async move {
         *result_clone.lock().unwrap() = Some(42);
     });
 
-    // RunLoop を実行してタスクを処理
+    // Run the RunLoop to process the task
     let run_loop = RunLoop::current();
     let mut handle = run_loop.schedule(Duration::from_millis(50), move || {
         RunLoop::current().stop();
@@ -25,7 +25,7 @@ fn test_task_normal_completion() {
 
     run_loop.run();
 
-    // 結果を確認
+    // Verify the result
     let res = result.lock().unwrap().take();
     assert_eq!(res, Some(42));
 
@@ -42,15 +42,15 @@ fn test_task_abort() {
     let run_loop = RunLoop::current();
 
     let handle = run_loop.spawn(async {
-        // 長時間実行されるタスク
+        // Long-running task
         RunLoop::current().delay(Duration::from_secs(10)).await;
         42
     });
 
-    // 即座に abort
+    // Abort immediately
     handle.abort();
 
-    // abort されたことを確認
+    // Confirm the task was aborted
     let mut handle = Box::pin(handle);
     let waker = futures::task::noop_waker();
     let mut cx = Context::from_waker(&waker);
@@ -60,7 +60,7 @@ fn test_task_abort() {
             assert!(result.is_err());
             assert!(result.unwrap_err().is_aborted());
         }
-        Poll::Pending => panic!("abort されたタスクは即座に完了すべきです"),
+        Poll::Pending => panic!("An aborted task should complete immediately"),
     }
 
     RunLoop::deinit();
@@ -77,10 +77,10 @@ fn test_task_panic() {
     let captured_panic_clone = captured_panic.clone();
 
     let handle = run_loop.spawn(async {
-        panic!("タスク内でパニック");
+        panic!("panic inside task");
     });
 
-    // spawn で別のタスクを起動して panic を検証
+    // Spawn another task to verify the panic result
     run_loop.spawn(async move {
         let result = handle.await;
         *captured_panic_clone.lock().unwrap() = Some(result);
@@ -89,16 +89,16 @@ fn test_task_panic() {
 
     run_loop.run();
 
-    // 結果を確認
+    // Verify the result
     let result = captured_panic.lock().unwrap().take().unwrap();
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(err.is_panic());
 
-    // panic メッセージを確認
+    // Verify the panic message
     if let JoinError::Panic(payload) = err {
         if let Some(msg) = payload.downcast_ref::<&str>() {
-            assert_eq!(*msg, "タスク内でパニック");
+            assert_eq!(*msg, "panic inside task");
         }
     }
 
@@ -114,22 +114,22 @@ fn test_multiple_tasks_mixed_results() {
     let run_loop = RunLoop::current();
     let results = Arc::new(Mutex::new(vec![]));
 
-    // 正常完了するタスク
+    // Task that completes normally
     let handle1 = run_loop.spawn(async { 1 });
 
-    // abort されるタスク
+    // Task that gets aborted
     let handle2 = run_loop.spawn(async {
         RunLoop::current().delay(Duration::from_secs(10)).await;
         2
     });
     handle2.abort();
 
-    // panic するタスク
+    // Task that panics
     let handle3 = run_loop.spawn(async {
-        panic!("意図的なパニック");
+        panic!("intentional panic");
     });
 
-    // 結果を収集するタスク
+    // Task that collects all results
     let results_clone = results.clone();
     run_loop.spawn(async move {
         let r1 = handle1.await;
@@ -146,19 +146,19 @@ fn test_multiple_tasks_mixed_results() {
 
     run_loop.run();
 
-    // 結果を確認
+    // Verify all results
     let res = results.lock().unwrap();
     assert_eq!(res.len(), 3);
 
-    // handle1: 正常完了
+    // handle1: completed normally
     assert!(res[0].1.is_ok());
     assert_eq!(res[0].1.as_ref().unwrap(), &1);
 
-    // handle2: キャンセル
+    // handle2: cancelled
     assert!(res[1].1.is_err());
     assert!(res[1].1.as_ref().unwrap_err().is_aborted());
 
-    // handle3: パニック
+    // handle3: panicked
     assert!(res[2].1.is_err());
     assert!(res[2].1.as_ref().unwrap_err().is_panic());
 
