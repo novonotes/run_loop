@@ -105,10 +105,10 @@ struct State {
 }
 
 pub struct PollSession {
-    /// `RunLoop::block_on` 中のポーリング状態。
+    /// Polling state for `RunLoop::block_on`.
     ///
-    /// 最初の短時間は非ブロッキングで積極的にポーリングし、
-    /// 一定時間経過後はこの RunLoop 専用 HWND のメッセージをブロッキング待機する。
+    /// For the first few milliseconds, poll non-blocking aggressively.
+    /// After that, block-wait on messages for this RunLoop's dedicated HWND.
     start: Instant,
     timed_out: bool,
 }

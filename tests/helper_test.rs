@@ -2,12 +2,12 @@ use novonotes_run_loop::{RunLoop, test_helper as test};
 use serial_test::serial;
 use std::time::Duration;
 
-// ヘルパー関数を使ったテスト例
+// Example tests using the helper function
 #[test]
 #[serial]
 fn test_success() -> Result<(), String> {
     let result = test::run_async(async {
-        // 成功するテスト
+        // A test that succeeds
         Ok(())
     });
     result
@@ -17,7 +17,7 @@ fn test_success() -> Result<(), String> {
 #[serial]
 fn test_async_wait() -> Result<(), String> {
     let result = test::run_async(async {
-        // RunLoop の wait 機能を使ったテスト
+        // Test using RunLoop's delay
         RunLoop::current().delay(Duration::from_millis(10)).await;
         Ok(())
     });
@@ -28,13 +28,13 @@ fn test_async_wait() -> Result<(), String> {
 #[serial]
 fn test_error_propagation() {
     let result: Result<(), String> = test::run_async(async {
-        // エラーが正しく伝播されることをテスト
+        // Verify that errors propagate correctly
         Err("Expected error".to_string())
     });
     assert!(result.is_err());
 }
 
-// このテストは意図的に失敗するため、ignore している。
+// This test intentionally fails and is therefore ignored.
 #[ignore]
 #[test]
 #[serial]

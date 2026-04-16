@@ -1,18 +1,19 @@
 use crate::RunLoop;
 use std::sync::{Arc, Mutex};
 
-/// RunLoopベースの非同期テストを実行するためのヘルパー関数
-/// RunLoop に依存するテストは、serial_test の #[serial] などで、直列実行する必要があります。
-/// RunLoop は同時に複数のスレッドを RunLoop スレッドとして設定することをサポートしていないためです。
+/// Helper function for running RunLoop-based async tests.
+/// Tests that depend on RunLoop must be serialized (e.g., with `#[serial]` from serial_test)
+/// because RunLoop does not support designating multiple threads as the run loop thread
+/// simultaneously.
 ///
-/// # 使用例
+/// # Example
 ///
 /// ```ignore
 /// #[test]
 /// #[serial]
 /// fn test_something() {
 ///     run_loop::test_helper::run_async(async {
-///         // run loop 上で非同期処理を実行
+///         // Run async work on the run loop
 ///         Ok::<(), String>(())
 ///     });
 /// }
@@ -27,10 +28,10 @@ where
     let result = Arc::new(Mutex::new(None));
     let result_clone = result.clone();
 
-    // 非同期関数を実行
+    // Spawn the async function
     let handle = run_loop.spawn(test_fn);
 
-    // 完了を待ってRunLoopを停止
+    // Wait for completion, then stop the RunLoop
     run_loop.spawn(async move {
         match handle.await {
             Ok(test_result) => {
@@ -52,7 +53,7 @@ where
 
     RunLoop::deinit();
 
-    // 結果を取り出して返す
+    // Extract and return the result
     let result = Arc::try_unwrap(result)
         .map_err(|_| "Failed to unwrap Arc")
         .unwrap()

@@ -58,12 +58,12 @@ impl State {
         let run_loop = unsafe { CFRunLoopGetCurrent() };
         let run_loop: CFRunLoopRef = unsafe { CFRetain(run_loop as *mut _) } as *mut _;
 
-        // オーディオプラグインなどの複数 DLL から同時に利用される場合でも、
-        // 各DLLが独自の RunLoopMode を持つように、
-        // タイムスタンプを使用して一意の名前を生成する
+        // Generate a unique name using a timestamp so that each DLL gets its own
+        // RunLoopMode even when multiple DLLs (e.g. audio plugins) use this crate
+        // simultaneously.
         //
-        // 同じ DLL を unload/load 繰り返した場合にも、クリーンな実行環境にするため、
-        // DLL の ID ではなく、タイムスタンプを使用。
+        // A timestamp is used instead of the DLL's identity so that repeated
+        // unload/reload cycles always start with a clean execution environment.
         let timestamp_suffix = crate::util::get_timestamp_suffix();
         let run_loop_mode = format!("IrondashRunLoopMode_{}", timestamp_suffix);
 
@@ -292,10 +292,10 @@ impl Drop for PlatformRunLoop {
 }
 
 pub struct PollSession {
-    /// `RunLoop::block_on` 中のポーリング状態。
+    /// Polling state for `RunLoop::block_on`.
     ///
-    /// 最初の短時間は低遅延のため短いタイムアウトでポーリングし、
-    /// 一定時間経過後は同じカスタムモードのまま長めに待機する。
+    /// For the first few milliseconds, poll with a short timeout for low latency.
+    /// After that, wait longer in the same custom mode to reduce CPU usage.
     start: Instant,
     timed_out: bool,
 }
@@ -417,11 +417,11 @@ impl PlatformRunLoop {
     pub fn poll_once(&self, poll_session: &mut PollSession) {
         let run_loop_mode = self.state.lock().unwrap().run_loop_mode.clone();
         if !poll_session.timed_out {
-            // 低遅延のため最初の 6ms は短いタイムアウトでポーリングする。
+            // For the first 6ms, poll with a short timeout for low latency.
             unsafe { CFRunLoopRunInMode(Id::as_ptr(&run_loop_mode) as CFStringRef, 0.006, 1) };
             poll_session.timed_out = poll_session.start.elapsed() >= Duration::from_millis(6);
         } else {
-            // 6ms 経過後はカスタムモードのまま長めに待機し CPU 消費を抑える。
+            // After 6ms, wait longer in the same custom mode to reduce CPU usage.
             unsafe { CFRunLoopRunInMode(Id::as_ptr(&run_loop_mode) as CFStringRef, 1.0, 1) };
         }
     }

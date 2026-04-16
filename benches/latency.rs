@@ -86,11 +86,11 @@ fn bench_sender_cross_thread_latency(c: &mut Criterion) {
             BenchmarkId::from_parameter(format!("{}_threads", thread_count)),
             thread_count,
             |b, &thread_count| {
-                // メインスレッドのrunloop初期化
+                // Initialize the run loop on the main thread
                 RunLoop::init().unwrap();
                 let main_run_loop = RunLoop::current();
 
-                // 各スレッドからの送信を測定
+                // Measure send latency from each thread
                 b.iter(|| {
                     let barrier = Arc::new(Barrier::new(thread_count + 1));
                     let completed = Arc::new(Mutex::new(0));
@@ -122,10 +122,10 @@ fn bench_sender_cross_thread_latency(c: &mut Criterion) {
                         handles.push(handle);
                     }
 
-                    // 全スレッドを同時にスタート
+                    // Start all threads simultaneously
                     barrier.wait();
 
-                    // メインスレッドでイベントを処理
+                    // Process events on the main thread
                     main_run_loop.run();
 
                     for handle in handles {
@@ -145,7 +145,7 @@ fn bench_sender_cross_thread_latency(c: &mut Criterion) {
 }
 
 fn bench_sender_send_and_wait_latency(c: &mut Criterion) {
-    // 別スレッドでRunLoopを実行
+    // Run the RunLoop on a background thread
     let (ready_tx, ready_rx) = mpsc::channel();
     let (sender_tx, sender_rx) = mpsc::channel::<RunLoopSender>();
     let running = Arc::new(Mutex::new(true));
@@ -157,7 +157,7 @@ fn bench_sender_send_and_wait_latency(c: &mut Criterion) {
         let sender = RunLoop::sender();
         sender_tx.send(sender).unwrap();
 
-        // 定期的に停止フラグをチェック
+        // Periodically check the stop flag
         let running_check = running_clone.clone();
         run_loop.spawn(async move {
             ready_tx.send(()).unwrap();
@@ -258,7 +258,7 @@ fn bench_schedule_with_delay(c: &mut Criterion) {
                     });
                     handle.detach();
 
-                    // タイムアウト用のタイマーも設定
+                    // Also set a timeout timer
                     let mut timeout_handle =
                         run_loop.schedule(Duration::from_millis(delay_ms + 100), || {
                             RunLoop::current().stop();

@@ -23,17 +23,18 @@ use crate::{
     util::FutureCompleter,
 };
 
-// ランループスレッドからのみアクセスされる静的変数用のラッパー
-// Sendだが!Syncな型を静的変数に格納できるようにする
+// Wrapper for static variables that are only accessed from the run loop thread.
+// Allows storing Send-but-!Sync types in static variables.
 struct RunLoopThreadOnly<T> {
     inner: std::cell::UnsafeCell<Option<T>>,
 }
 
-// MainThreadOnlyは!Sendな型も格納できるが、
-// ランループスレッドからのみアクセスされることを前提としている
+// RunLoopThreadOnly can hold !Send types, but access is only allowed from the
+// run loop thread.
 unsafe impl<T> Send for RunLoopThreadOnly<T> {}
 unsafe impl<T> Sync for RunLoopThreadOnly<T> {}
-// 警告: この実装は危険！ランループスレッドからのみアクセスすることを保証する必要がある
+// Warning: this implementation is unsafe! The caller must guarantee that access
+// is restricted to the run loop thread.
 
 impl<T> RunLoopThreadOnly<T> {
     const fn new() -> Self {
@@ -69,11 +70,11 @@ impl<T> RunLoopThreadOnly<T> {
     }
 }
 
-// グローバルシングルトン実装
+// Global singleton
 static RUN_LOOP_INSTANCE: RunLoopThreadOnly<Arc<RunLoopInner>> = RunLoopThreadOnly::new();
 static RUN_LOOP_THREAD_ID: Mutex<Option<ThreadId>> = Mutex::new(None);
 
-// CLAPパターンに従った初期化カウント
+// Initialization counter following the CLAP pattern
 static INIT_COUNT: AtomicUsize = AtomicUsize::new(0);
 static INIT_MUTEX: Mutex<()> = Mutex::new(());
 static BLOCK_ON_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -121,9 +122,9 @@ impl Wake for BlockOnWaker {
     }
 
     fn wake_by_ref(self: &Arc<Self>) {
-        // `block_on` は待機中に platform の poll ループへ制御を返しているため、
-        // future が wake されたら RunLoop をもう一度回すきっかけが必要になる。
-        // ここでは空コールバックを 1 件だけ再投入し、過剰な wake スパムを避ける。
+        // `block_on` yields control back to the platform poll loop while waiting,
+        // so when the future is woken we need to trigger another run loop iteration.
+        // We re-enqueue a single empty callback to avoid excessive wake spam.
         if !self.queued.swap(true, Ordering::AcqRel) {
             self.sender.send(|| {});
         }
@@ -138,15 +139,15 @@ struct RunLoopInner {
 
 impl Drop for RunLoopInner {
     fn drop(&mut self) {
-        // 通常は shutdown() で has_shutdown が設定されるが、
-        // 異常終了時（deinit() が呼ばれずに DLL がアンロードされる等）にも
-        // has_shutdown を true にすることで、他のコードが適切に動作を停止できるようにする
+        // Normally has_shutdown is set by shutdown(), but in abnormal exit scenarios
+        // (e.g. DLL unloaded without calling deinit()) we set it here so other code
+        // can stop cleanly.
         self.has_shutdown.store(true, Ordering::SeqCst);
 
-        // アクティブタスクのクリーンアップ
+        // Clean up active tasks
         if let Ok(tasks) = self.active_tasks.lock() {
-            // タスクは既にWeakなので、強制的なabortは不要
-            // ただしログを出力
+            // Tasks are already held as Weak, so no forced abort is required.
+            // Log a warning if any are still alive.
             let active_count = tasks.iter().filter(|t| t.upgrade().is_some()).count();
             if active_count > 0 {
                 warn!(
@@ -156,38 +157,38 @@ impl Drop for RunLoopInner {
             }
         }
 
-        // プラットフォーム固有のクリーンアップは各プラットフォームの Drop 実装で自動的に行われる
+        // Platform-specific cleanup is handled automatically by each platform's Drop impl.
     }
 }
 
-/// プラットフォーム固有の RunLoop を抽象化した型
+/// An abstraction over the platform-specific RunLoop.
 ///
-/// ランループスレッドとは
+/// ## Run loop thread
 ///
-/// RunLoop::init() を呼び出したスレッドのこと。任意の時点で存在できるランループスレッドは
-/// システム全体で単一のスレッドのみ（MUST）。このスレッドでのみ RunLoop::current() が使用可能。
+/// The thread that called `RunLoop::init()`. At any given moment only a single run loop thread
+/// may exist in the entire process (MUST). `RunLoop::current()` is only usable on this thread.
 ///
-/// - 通常のアプリケーション: メインスレッドで RunLoop::init() を呼び出すべき（SHOULD）
-/// - テスト環境: 任意のスレッドをランループスレッドに指定可能（MAY）
-/// - スレッド切り替え: deinit() 後に別スレッドで init() することで切り替え可能（MAY）
+/// - Ordinary applications: should call `RunLoop::init()` on the main thread (SHOULD)
+/// - Test environments: any thread may be designated as the run loop thread (MAY)
+/// - Thread switching: can be changed by calling `deinit()` then `init()` on another thread (MAY)
 pub struct RunLoop {
     inner: Arc<RunLoopInner>,
 }
 
 #[derive(Debug, Clone)]
 pub enum Error {
-    /// エンジンコンテキストプラグインが読み込まれていない。
-    /// メインスレッドsenderへのアクセスにはirondash_engine_context Flutterプラグインが必要。
+    /// The engine-context plugin is not loaded.
+    /// Accessing the main-thread sender requires the irondash_engine_context Flutter plugin.
     #[cfg(feature = "flutter")]
     EngineContextPluginError(irondash_engine_context::Error),
 
-    /// RunLoopは既に初期化されている
+    /// RunLoop is already initialized.
     AlreadyInitialized,
 
-    /// RunLoopが初期化されていない。先にRunLoop::init()を呼び出すこと
+    /// RunLoop is not initialized. Call RunLoop::init() first.
     NotInitialized,
 
-    /// RunLoopスレッド以外から呼び出された
+    /// Called from a thread that is not the run loop thread.
     NotRunLoopThread,
 
     #[cfg(test)]
@@ -230,17 +231,15 @@ impl Display for Error {
 
 impl std::error::Error for Error {}
 
-// thread_local削除 - グローバルシングルトンに置き換え
-
 impl RunLoop {
-    /// アプリケーション/DLLの初期化時に呼び出す（CLAPのinit、VST3のInitDll相当）
-    /// 複数回呼ばれても安全（防御的実装）
+    /// Call during application/DLL initialization (equivalent to CLAP `init` or VST3 `InitDll`).
+    /// Safe to call multiple times (defensive implementation).
     pub fn init() -> Result<()> {
         let _guard = INIT_MUTEX.lock().unwrap();
 
         let count = INIT_COUNT.fetch_add(1, Ordering::SeqCst);
         if count == 0 {
-            // 初回のみ実際の初期化
+            // Only initialize on the first call
             Self::initialize()?;
         }
 
@@ -251,7 +250,7 @@ impl RunLoop {
         Ok(())
     }
 
-    /// 現在のスレッドをランループスレッドとして保証する
+    /// Ensures the current thread is the run loop thread.
     pub fn ensure_run_loop_on_current_thread() -> Result<()> {
         let guard = INIT_MUTEX.lock().unwrap();
         let count = INIT_COUNT.load(Ordering::SeqCst);
@@ -274,27 +273,27 @@ impl RunLoop {
         Ok(())
     }
 
-    /// アプリケーション/DLLの終了時に呼び出す（CLAPのdeinit、VST3のExitDll相当）
-    /// init()と同じ回数だけ呼ばれる必要がある
+    /// Call during application/DLL teardown (equivalent to CLAP `deinit` or VST3 `ExitDll`).
+    /// Must be called the same number of times as `init()`.
     pub fn deinit() {
         let _guard = INIT_MUTEX.lock().unwrap();
 
         let count = INIT_COUNT.fetch_sub(1, Ordering::SeqCst);
         if count == 1 {
-            // 最後の呼び出しで実際のクリーンアップ
+            // Perform actual cleanup on the last call
             Self::shutdown();
         }
     }
 
-    /// 内部使用のみ：実際の初期化処理
+    /// Internal only: performs the actual initialization.
     fn initialize() -> Result<()> {
-        // 現在のスレッドをランループスレッドとして記録
+        // Record the current thread as the run loop thread
         {
             let mut thread_id = RUN_LOOP_THREAD_ID.lock().unwrap();
             *thread_id = Some(thread::current().id());
         }
 
-        // RunLoopインスタンスを作成
+        // Create the RunLoop instance
         let inner = Arc::new(RunLoopInner {
             platform_run_loop: Rc::new(PlatformRunLoop::new()),
             active_tasks: Mutex::new(Vec::new()),
@@ -305,22 +304,22 @@ impl RunLoop {
             .set(inner)
             .map_err(|_| Error::AlreadyInitialized)?;
 
-        // MainThreadFacilitatorを設定（Flutter pluginがない環境でも動作するように）
+        // Set up MainThreadFacilitator (works even without Flutter plugin)
         MainThreadFacilitator::set_for_current_thread();
 
         Ok(())
     }
 
-    /// 内部使用のみ：実際のクリーンアップ処理
+    /// Internal only: performs the actual cleanup.
     fn shutdown() {
         if let Some(instance) = RUN_LOOP_INSTANCE.get() {
-            // シャットダウン完了を記録
+            // Record that shutdown is complete
             instance.has_shutdown.store(true, Ordering::SeqCst);
 
-            // アクティブタスクをすべてabort
-            // abort 中の panic をキャッチしてクラッシュを防ぐ。
-            // オーディオプラグインでは DAW をクラッシュさせないことが最優先。
-            // これは保険であり、本来は panic が起きない設計にすべき。
+            // Abort all active tasks.
+            // Catch any panics during abort to prevent crashes.
+            // In audio plugins, not crashing the DAW host is the top priority.
+            // This is a safety net; ideally no panic should occur here.
             if let Ok(tasks) = instance.active_tasks.lock() {
                 for weak_task in tasks.iter() {
                     if let Some(task) = weak_task.upgrade() {
@@ -338,34 +337,34 @@ impl RunLoop {
                 }
             }
 
-            // アクティブタスクのリストをクリア
+            // Clear the active task list
             if let Ok(mut tasks) = instance.active_tasks.lock() {
                 tasks.clear();
             }
 
-            // プラットフォーム固有のクリーンアップは各プラットフォームの Drop 実装で自動的に行われる
+            // Platform-specific cleanup is handled automatically by each platform's Drop impl.
         }
 
-        // ランループスレッドIDをクリア（次のinit()で新しいスレッドを設定可能にする）
+        // Clear the run loop thread ID so a new thread can be set by the next init()
         {
             let mut thread_id = RUN_LOOP_THREAD_ID.lock().unwrap();
             *thread_id = None;
         }
 
-        // RunLoopインスタンスもクリア（次のinit()で新しいインスタンスを作成可能にする）
+        // Clear the RunLoop instance so a new one can be created by the next init()
         RUN_LOOP_INSTANCE.clear();
 
-        // MainThreadFacilitatorをリセット
+        // Reset MainThreadFacilitator
         MainThreadFacilitator::reset();
     }
 
-    /// 指定された遅延後にコールバックを実行するようスケジュール。
+    /// Schedules `callback` to be executed after `in_time`.
     ///
-    /// コールバックが実行されるまで保持する必要がある[`Handle`]を返す。
-    /// ハンドルが早期にドロップされると、コールバックはキャンセルされる。
+    /// Returns a [`Handle`] that must be kept alive until the callback executes.
+    /// Dropping the handle early cancels the callback.
     ///
-    /// * [`Handle::detach()`]を呼ぶとハンドルをドロップしても実行が保証される
-    /// * [`Handle::cancel()`]でハンドルをドロップせずにキャンセル可能
+    /// * Call [`Handle::detach()`] to ensure execution even after the handle is dropped.
+    /// * Call [`Handle::cancel()`] to cancel without dropping the handle.
     #[must_use]
     pub fn schedule<F>(&self, in_time: Duration, callback: F) -> Handle
     where
@@ -379,7 +378,7 @@ impl RunLoop {
         })
     }
 
-    /// 指定された時間後に完了するFutureを返す。
+    /// Returns a Future that completes after the specified duration.
     pub async fn delay(&self, duration: Duration) {
         let (future, completer) = FutureCompleter::<()>::new();
         self.schedule(duration, move || {
@@ -389,7 +388,7 @@ impl RunLoop {
         future.await
     }
 
-    /// ランループスレッドへコールバックを送信できるsenderオブジェクトを返す。
+    /// Returns a sender object that can post callbacks to the run loop thread.
     pub fn sender() -> RunLoopSender {
         if Self::is_run_loop_thread() {
             RunLoop::current().new_sender()
@@ -400,14 +399,13 @@ impl RunLoop {
         }
     }
 
-    /// 他のスレッドからこのランループでコールバックを実行するための
-    /// senderオブジェクトを返す。
-    /// senderは`RunLoop`と異なり`Send`と`Sync`を実装している。
+    /// Returns a sender object that allows other threads to execute callbacks on this run loop.
+    /// Unlike `RunLoop`, the sender implements `Send` and `Sync`.
     pub(crate) fn new_sender(&self) -> RunLoopSender {
         RunLoopSender::new(self.inner.platform_run_loop.new_sender())
     }
 
-    /// 現在のスレッドがランループスレッドかどうかを返す
+    /// Returns whether the current thread is the run loop thread.
     pub fn is_run_loop_thread() -> bool {
         let thread_id = RUN_LOOP_THREAD_ID.lock().unwrap();
         if let Some(run_loop_thread_id) = *thread_id {
@@ -418,15 +416,15 @@ impl RunLoop {
         }
     }
 
-    /// 現在のスレッドをランループスレッドとして設定
+    /// Sets the current thread as the run loop thread.
     ///
     /// [deprecated]
-    /// もしかしたら古い Flutter と統合する際に必要かもしれないので残してあるだけ。
-    /// 基本的にこのメソッドではなく、RunLoop::init() によって RunLoopスレッドを指定するべき。
+    /// Retained only in case it is needed for integrating with older Flutter versions.
+    /// In general, the run loop thread should be designated via `RunLoop::init()` instead.
     ///
-    /// irondash_engine_contextプラグインを使用しない場合、
-    /// RunLoop::init()の後にランループスレッドで呼び出す。
-    /// これによりFlutterプラグインなしでRunLoop::sender_for_run_loop_thread()が動作する。
+    /// Call from the run loop thread after `RunLoop::init()` when not using the
+    /// irondash_engine_context plugin. This allows `RunLoop::sender_for_run_loop_thread()`
+    /// to work without a Flutter plugin.
     #[deprecated(note = "Use RunLoop::init() instead")]
     pub fn set_run_loop_thread() {
         {
@@ -434,26 +432,26 @@ impl RunLoop {
             *thread_id = Some(thread::current().id());
         }
 
-        // MainThreadFacilitatorを設定（Flutter pluginがない環境でも動作するように）
+        // Set up MainThreadFacilitator (works even without Flutter plugin)
         use crate::main_thread::MainThreadFacilitator;
         MainThreadFacilitator::set_for_current_thread();
     }
 
-    /// このランループをエグゼキュータとしてFutureをスポーンする。
+    /// Spawns a Future using this run loop as the executor.
     pub fn spawn<T: 'static>(&self, future: impl Future<Output = T> + 'static) -> JoinHandle<T> {
-        // シャットダウンチェック
+        // Check for shutdown
         if self.inner.has_shutdown.load(Ordering::SeqCst) {
             panic!("Cannot spawn task on shut down RunLoop");
         }
 
         let task = Arc::new(Task::new(self.new_sender(), future));
 
-        // タスクを追跡リストに追加
+        // Track the task
         {
             let mut tasks = self.inner.active_tasks.lock().unwrap();
             tasks.push(Arc::downgrade(&(task.clone() as Arc<dyn AbortableTask>)));
 
-            // デッドタスクを定期的にクリーンアップ
+            // Periodically clean up dead tasks
             if tasks.len() > 100 {
                 tasks.retain(|weak| weak.upgrade().is_some());
             }
@@ -463,29 +461,30 @@ impl RunLoop {
         JoinHandle::new(task)
     }
 
-    /// 指定されたFutureが完了するまで現在のスレッドを同期的に待機する。
+    /// Synchronously blocks the current thread until the given Future completes.
     ///
-    /// このメソッドは待機中も RunLoop を駆動し続けるため、`spawn` で投入された他タスクも実行される。
-    /// そのため、待機対象 Future が RunLoop 上の別タスク完了に依存していても進行できる。
-    /// 一方で `pollster::block_on` など外部 executor は RunLoop を駆動しないため、
-    /// 同じ依存関係ではデッドロックしうる。
+    /// This method continues to drive the RunLoop while waiting, so other tasks submitted
+    /// via `spawn` can also make progress. This means a Future that depends on another task
+    /// completing on the run loop will not deadlock. In contrast, external executors such as
+    /// `pollster::block_on` do not drive the run loop and would deadlock in the same situation.
     ///
-    /// `spawn` は使わず、呼び出し元の future をその場で直接 poll する。
-    /// そのため `RunLoop::spawn` と異なり、non-`'static` な借用を含む future も扱える。
+    /// Unlike `spawn`, this method polls the provided future directly in place without spawning it.
+    /// Therefore, unlike `RunLoop::spawn`, it can accept futures that contain non-`'static` borrows.
     ///
-    /// `flutter` feature 有効時、通常のポーリング (`run` 用) は必要に応じてプラットフォーム既定の
-    /// イベントキューへフォールバックする場合があるが、`block_on` では常に RunLoop 固有ソースのみを処理する。
+    /// When the `flutter` feature is enabled, the normal polling path (for `run`) may fall back to
+    /// the platform default event queue as needed, but `block_on` always processes only RunLoop
+    /// specific sources.
     ///
-    /// ネストした `block_on` はパニックする。
+    /// Nested `block_on` calls will panic.
     ///
-    /// # 使用例
+    /// # Example
     ///
     /// ```no_run
     /// use novonotes_run_loop::RunLoop;
     ///
     /// RunLoop::init().unwrap();
     /// let result = RunLoop::current().block_on(async {
-    ///     // 非同期処理
+    ///     // Async work
     ///     42
     /// });
     /// assert_eq!(result, 42);
@@ -505,8 +504,8 @@ impl RunLoop {
         let mut context = Context::from_waker(&waker);
         let mut future = pin!(future);
 
-        // stop() は使わず、待機対象 future が wake されるたびに再 poll しつつ
-        // RunLoop 固有ソースを回し続ける。
+        // Rather than using stop(), re-poll the target future each time it is woken
+        // while continuing to drive RunLoop-specific sources.
         let mut poll_session = PollSession::new();
 
         loop {
@@ -522,11 +521,10 @@ impl RunLoop {
         }
     }
 
-    /// 現在のスレッドのRunLoopを返す
-    /// 必ずランループスレッドから呼び出すべき。
-    /// それ以外のスレッドの場合はパニックする。
+    /// Returns the RunLoop for the current thread.
+    /// Must be called from the run loop thread; panics otherwise.
     pub fn current() -> Self {
-        // ランループスレッドチェック
+        // Verify we are on the run loop thread
         let current_thread = thread::current().id();
         let thread_id = RUN_LOOP_THREAD_ID.lock().unwrap();
 
@@ -538,12 +536,12 @@ impl RunLoop {
             panic!("RunLoop not initialized. Call RunLoop::init() first");
         }
 
-        // インスタンス取得
+        // Retrieve the instance
         let instance = RUN_LOOP_INSTANCE
             .get()
             .expect("RunLoop not initialized. Call RunLoop::init() first");
 
-        // シャットダウンチェック
+        // Check for shutdown
         if instance.has_shutdown.load(Ordering::SeqCst) {
             panic!("RunLoop has been shut down");
         }
@@ -553,11 +551,11 @@ impl RunLoop {
         }
     }
 
-    /// 現在のスレッドのRunLoopを取得する失敗可能なメソッド。
+    /// Fallible variant of [`RunLoop::current()`].
     ///
-    /// 現在のスレッドで RunLoop が初期化されていない場合はエラーを返す。
+    /// Returns an error if the RunLoop is not initialized on the current thread.
     pub fn try_current() -> Result<Self> {
-        // ランループスレッドチェック
+        // Verify we are on the run loop thread
         let current_thread = thread::current().id();
         let thread_id = RUN_LOOP_THREAD_ID.lock().unwrap();
 
@@ -569,10 +567,10 @@ impl RunLoop {
             return Err(Error::NotInitialized);
         }
 
-        // インスタンス取得
+        // Retrieve the instance
         let instance = RUN_LOOP_INSTANCE.get().ok_or(Error::NotInitialized)?;
 
-        // シャットダウンチェック
+        // Check for shutdown
         if instance.has_shutdown.load(Ordering::SeqCst) {
             return Err(Error::NotInitialized);
         }
@@ -582,17 +580,17 @@ impl RunLoop {
         })
     }
 
-    /// 停止されるまでランループを実行する。
+    /// Runs the run loop until stopped.
     ///
-    /// スタンドアロンアプリなど、自前でランループを駆動する場合に使用する。
-    /// プラグイン環境ではホストが既にループを回しているため、通常は呼び出す必要がない。
+    /// Use this in standalone applications that drive their own run loop.
+    /// In plugin environments the host already drives the loop, so this is normally not needed.
     ///
-    /// 呼び出し前に `RunLoop::init()` が完了している必要がある。
+    /// `RunLoop::init()` must have completed before calling this.
     pub fn run(&self) {
         self.inner.platform_run_loop.run()
     }
 
-    /// ランループを停止する。
+    /// Stops the run loop.
     pub fn stop(&self) {
         self.inner.platform_run_loop.stop()
     }
@@ -608,8 +606,8 @@ impl RunLoop {
     }
 }
 
-/// 現在のスレッドのランループをエグゼキュータとしてFutureをスポーンする。
-/// 事前にRunLoop::init()で初期化されている必要がある。
+/// Spawns a Future using the current thread's RunLoop as the executor.
+/// The RunLoop must have been initialized with `RunLoop::init()` beforehand.
 pub fn spawn<T: 'static>(future: impl Future<Output = T> + 'static) -> JoinHandle<T> {
     RunLoop::current().spawn(future)
 }
@@ -657,7 +655,7 @@ mod tests {
         let sender = run_loop.new_sender();
         let stop_called = Arc::new(Mutex::new(false));
         let stop_called_clone = stop_called.clone();
-        // ランループが既に実行中のときにスレッドをスポーンすることを確認
+        // Confirm that a thread can be spawned while the run loop is already running
         // run_loop.schedule(Duration::from_secs(1000), || {}).detach();
         run_loop
             .schedule(Duration::from_secs(0), || {
@@ -691,7 +689,7 @@ mod tests {
                 });
             });
 
-            // コールバックが実行されるまで待機
+            // Wait until the callback executes
             rx.await.unwrap();
 
             handle.join().unwrap();
@@ -717,14 +715,14 @@ mod tests {
     #[test]
     #[serial]
     fn test_init_deinit_reinit() {
-        // 初回のinit
+        // First init
         RunLoop::init().unwrap();
         assert!(RunLoop::is_run_loop_thread());
 
-        // deinitで状態をクリア
+        // deinit clears the state
         RunLoop::deinit();
 
-        // 別のスレッドで再度init可能
+        // Can re-init on another thread
         let handle = thread::spawn(|| {
             RunLoop::init().unwrap();
             assert!(RunLoop::is_run_loop_thread());
@@ -732,7 +730,7 @@ mod tests {
         });
         handle.join().unwrap();
 
-        // 元のスレッドでも再度init可能
+        // Can re-init on the original thread as well
         RunLoop::init().unwrap();
         assert!(RunLoop::is_run_loop_thread());
         RunLoop::deinit();
@@ -743,20 +741,18 @@ mod tests {
     fn test_deinit_aborts_all_tasks() {
         use std::sync::atomic::{AtomicBool, Ordering};
 
-        // 初期化
         RunLoop::init().unwrap();
 
-        // タスクが実行されたかを追跡
+        // Track whether each task has started
         let task1_started = Arc::new(AtomicBool::new(false));
         let task2_started = Arc::new(AtomicBool::new(false));
 
         let t1_started = task1_started.clone();
         let t2_started = task2_started.clone();
 
-        // 長時間実行されるタスクをスポーン
+        // Spawn long-running tasks that wait to be aborted
         let handle1 = RunLoop::current().spawn(async move {
             t1_started.store(true, Ordering::SeqCst);
-            // 無限ループでabort待ち
             loop {
                 std::future::pending::<()>().await;
             }
@@ -764,33 +760,30 @@ mod tests {
 
         let handle2 = RunLoop::current().spawn(async move {
             t2_started.store(true, Ordering::SeqCst);
-            // 無限ループでabort待ち
             loop {
                 std::future::pending::<()>().await;
             }
         });
 
-        // RunLoopを少し実行してタスクを開始させる
+        // Run the loop briefly to let the tasks start, then stop
         RunLoop::current()
             .schedule(Duration::from_millis(300), || {
-                // タスクが開始されるのを待ってから停止
                 RunLoop::current().stop();
             })
             .detach();
         RunLoop::current().run();
 
-        // タスクが開始されていたことを確認
+        // Confirm the tasks started
         assert!(task1_started.load(Ordering::SeqCst));
         assert!(task2_started.load(Ordering::SeqCst));
 
-        // deinit()を呼ぶ - 全てのタスクがabortされるはず
+        // deinit() should abort all tasks
         RunLoop::deinit();
 
-        // pollster::block_on でタスクがアボートされたことを確認
+        // Confirm both tasks were aborted
         let result1 = pollster::block_on(handle1);
         let result2 = pollster::block_on(handle2);
 
-        // 両方のタスクがAbortedエラーを返すはず
         assert!(matches!(result1, Err(crate::JoinError::Aborted)));
         assert!(matches!(result2, Err(crate::JoinError::Aborted)));
     }
@@ -823,7 +816,8 @@ mod tests {
     fn test_block_on_drives_spawned_tasks() {
         RunLoop::init().unwrap();
 
-        // `block_on` 待機中も RunLoop が回り続け、別途 spawn されたタスクが進行できることを確認。
+        // Verify that the RunLoop continues to run during block_on so that
+        // separately spawned tasks can make progress.
         let handle = RunLoop::current().spawn(async move {
             RunLoop::current().delay(Duration::from_millis(20)).await;
             123
@@ -838,10 +832,10 @@ mod tests {
     #[test]
     #[serial]
     fn test_block_on_nested() {
-        // 前のテストの影響を排除するため ensure を使用
+        // Use ensure to avoid interference from a previous test
         RunLoop::ensure_run_loop_on_current_thread().unwrap();
 
-        // ネストした block_on は未定義動作として debug_assert で検出される
+        // Nested block_on is undefined behavior and should be detected
         let result = std::panic::catch_unwind(|| {
             RunLoop::current().block_on(async {
                 let inner_result = RunLoop::current().block_on(async { "inner" });
@@ -856,10 +850,10 @@ mod tests {
     #[test]
     #[serial]
     fn test_block_on_panic() {
-        // 前のテストの影響を排除するため ensure を使用
+        // Use ensure to avoid interference from a previous test
         RunLoop::ensure_run_loop_on_current_thread().unwrap();
 
-        // catch_unwind でパニックをキャッチして deinit を確実に呼ぶ
+        // Catch the panic so deinit is always called
         let result = std::panic::catch_unwind(|| {
             RunLoop::current().block_on(async {
                 panic!("Task panicked");
@@ -875,7 +869,8 @@ mod tests {
     fn test_block_on_recovers_after_panic() {
         RunLoop::ensure_run_loop_on_current_thread().unwrap();
 
-        // panic で `block_on` を抜けた後もネスト判定フラグが解除され、次回呼び出しが正常動作することを確認。
+        // After exiting block_on via a panic, the nesting flag should be cleared
+        // so subsequent calls work correctly.
         let panic_result = std::panic::catch_unwind(|| {
             RunLoop::current().block_on(async {
                 panic!("Task panicked");
@@ -906,7 +901,7 @@ mod tests {
             }
         }
 
-        // `&mut self` を借用した non-`'static` future を `block_on` に渡せることを確認。
+        // Confirm that a non-`'static` future borrowing `&mut self` can be passed to block_on.
         let mut counter = Counter { value: 41 };
         let result = RunLoop::current().block_on(counter.increment_and_get());
 
