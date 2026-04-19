@@ -16,14 +16,6 @@
 - **スレッド間通信**: 安全なメッセージパッシング機構
 - **DLL/オーディオプラグイン対応**: 他社アプリケーションにリンクされた DLL で動作するユースケースをサポート
 
-## 動作報告を募集中！
-
-`novonotes_run_loop` を使った実例として、WRAC スタック上に構築されたシンプルな Gain プラグイン入りの [wxp-gain-example](https://github.com/novonotes/wrac-plugin-template) があります。
-ぜひお手元の DAW で動かして、実際の動作状況を教えてください。
-
-「Logic Pro 10.7 で動きました！」のような短い報告でも、コミュニティにとって十分役立ちます：
-👉 [DAW互換性報告](https://github.com/novonotes/wrac-plugin-template/discussions/6)
-
 ## 基本的な使い方
 
 ### 初期化

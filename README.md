@@ -18,14 +18,6 @@ enabling plugins to schedule and launch tasks on the main thread.
 - **Cross-thread communication**: Safe message-passing mechanism
 - **DLL / audio plugin support**: Handles use cases where the library runs inside a DLL linked into a third-party application
 
-## Give It a Spin?
-
-`novonotes_run_loop` is used in [wxp-gain-example](https://github.com/novonotes/wrac-plugin-template), which ships with a simple Gain plugin built on the WRAC stack.
-Try loading it in your DAW and let us know how it works in practice.
-
-Even a quick note like **"Works on Logic Pro 10.7"** is helpful for the community:
-👉 [DAW Compatibility Reports](https://github.com/novonotes/wrac-plugin-template/discussions/6)
-
 ## Basic Usage
 
 ### Initialization
