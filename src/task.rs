@@ -44,7 +44,7 @@ impl JoinError {
     }
 }
 
-pub struct Task<T> {
+pub(crate) struct Task<T> {
     sender: RunLoopSender,
     future: UnsafeCell<Option<LocalBoxFuture<'static, T>>>,
     value: RefCell<Option<Result<T, JoinError>>>,
