@@ -17,14 +17,13 @@ pub mod windows {
     pub type HICON = isize;
     pub type HBRUSH = isize;
     pub type BOOL = i32;
+    pub type WAIT_EVENT = u32;
     pub type WNDPROC = unsafe extern "system" fn(
         param0: HWND,
         param1: u32,
         param2: WPARAM,
         param3: LPARAM,
     ) -> LRESULT;
-    pub type TIMERPROC =
-        unsafe extern "system" fn(param0: HWND, param1: u32, param2: usize, param3: u32);
     pub type QUEUE_STATUS_FLAGS = u32;
     pub type MSG_WAIT_FOR_MULTIPLE_OBJECTS_EX_FLAGS = u32;
     pub type PEEK_MESSAGE_REMOVE_TYPE = u32;
@@ -46,6 +45,12 @@ pub mod windows {
 
     pub const PM_REMOVE: PEEK_MESSAGE_REMOVE_TYPE = 1u32;
     pub const PM_NOYIELD: PEEK_MESSAGE_REMOVE_TYPE = 2u32;
+
+    pub const FALSE: BOOL = 0;
+    pub const INFINITE: u32 = 0xFFFFFFFF;
+    pub const WAIT_OBJECT_0: WAIT_EVENT = 0;
+    pub const CREATE_WAITABLE_TIMER_HIGH_RESOLUTION: DWORD = 0x00000002;
+    pub const TIMER_ALL_ACCESS: DWORD = 0x001F0003;
 
     #[repr(C)]
     pub struct WNDCLASSW {
@@ -97,7 +102,40 @@ pub mod windows {
 
     #[link(name = "kernel32")]
     unsafe extern "system" {
+        pub fn CloseHandle(hobject: HANDLE) -> BOOL;
+        pub fn CreateEventW(
+            lpEventAttributes: *const ::core::ffi::c_void,
+            bManualReset: BOOL,
+            bInitialState: BOOL,
+            lpName: PWSTR,
+        ) -> HANDLE;
+        pub fn CreateWaitableTimerW(
+            lpTimerAttributes: *const ::core::ffi::c_void,
+            bManualReset: BOOL,
+            lpTimerName: PWSTR,
+        ) -> HANDLE;
+        pub fn CreateWaitableTimerExW(
+            lpTimerAttributes: *const ::core::ffi::c_void,
+            lpTimerName: PWSTR,
+            dwFlags: DWORD,
+            dwDesiredAccess: DWORD,
+        ) -> HANDLE;
         pub fn GetModuleHandleW(lpmodulename: PWSTR) -> HINSTANCE;
+        pub fn SetEvent(hEvent: HANDLE) -> BOOL;
+        pub fn SetWaitableTimer(
+            hTimer: HANDLE,
+            lpDueTime: *const i64,
+            lPeriod: i32,
+            pfnCompletionRoutine: *const ::core::ffi::c_void,
+            lpArgToCompletionRoutine: *const ::core::ffi::c_void,
+            fResume: BOOL,
+        ) -> BOOL;
+        pub fn WaitForMultipleObjects(
+            nCount: u32,
+            lpHandles: *const HANDLE,
+            bWaitAll: BOOL,
+            dwMilliseconds: u32,
+        ) -> WAIT_EVENT;
     }
 
     #[link(name = "user32")]
@@ -134,19 +172,7 @@ pub mod windows {
             wmsgfiltermin: u32,
             wmsgfiltermax: u32,
         ) -> BOOL;
-        pub fn FindWindowExW(
-            hwndparent: HWND,
-            hwndchildafter: HWND,
-            lpszclass: PWSTR,
-            lpszwindow: PWSTR,
-        ) -> HWND;
         pub fn PostMessageW(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> BOOL;
-        pub fn SetTimer(
-            hwnd: HWND,
-            nidevent: usize,
-            uelapse: u32,
-            lptimerfunc: ::core::option::Option<TIMERPROC>,
-        ) -> usize;
         pub fn TranslateMessage(lpmsg: *const MSG) -> BOOL;
         pub fn MsgWaitForMultipleObjectsEx(
             ncount: u32,

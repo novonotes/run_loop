@@ -6,6 +6,7 @@ use std::{
     collections::HashMap,
     rc::Weak,
     sync::{Arc, Mutex},
+    thread::JoinHandle,
     time::{Duration, Instant},
 };
 
@@ -89,6 +90,104 @@ struct Timer {
 type SenderCallback = Box<dyn FnOnce() + Send>;
 
 const WM_RUNLOOP_STOP: u32 = WM_USER + 1;
+const WM_RUNLOOP_TIMER: u32 = WM_USER + 2;
+
+struct TimerWaker {
+    timer: HANDLE,
+    shutdown_event: HANDLE,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl TimerWaker {
+    fn new(hwnd: HWND) -> Self {
+        unsafe {
+            let timer = create_waitable_timer();
+            assert!(timer != 0, "CreateWaitableTimerW failed");
+
+            let shutdown_event = CreateEventW(std::ptr::null(), FALSE, FALSE, std::ptr::null_mut());
+            assert!(shutdown_event != 0, "CreateEventW failed");
+
+            let thread = std::thread::spawn(move || {
+                let handles = [timer, shutdown_event];
+                loop {
+                    let result = WaitForMultipleObjects(
+                        handles.len() as u32,
+                        handles.as_ptr(),
+                        FALSE,
+                        INFINITE,
+                    );
+                    if result == WAIT_OBJECT_0 {
+                        PostMessageW(hwnd, WM_RUNLOOP_TIMER, 0, 0);
+                    } else if result == WAIT_OBJECT_0 + 1 {
+                        break;
+                    } else {
+                        break;
+                    }
+                }
+            });
+
+            Self {
+                timer,
+                shutdown_event,
+                thread: Some(thread),
+            }
+        }
+    }
+
+    fn wake_up_at(&self, time: Instant) {
+        let wait_time = time.saturating_duration_since(Instant::now());
+        let due_time = -duration_to_100ns_ticks(wait_time);
+        unsafe {
+            SetWaitableTimer(
+                self.timer,
+                &due_time as *const _,
+                0,
+                std::ptr::null(),
+                std::ptr::null(),
+                FALSE,
+            );
+        }
+    }
+}
+
+impl Drop for TimerWaker {
+    fn drop(&mut self) {
+        unsafe {
+            SetEvent(self.shutdown_event);
+        }
+
+        let Some(thread) = self.thread.take() else {
+            return;
+        };
+        thread.join().unwrap();
+
+        unsafe {
+            CloseHandle(self.shutdown_event);
+            CloseHandle(self.timer);
+        }
+    }
+}
+
+unsafe fn create_waitable_timer() -> HANDLE {
+    let timer = unsafe {
+        CreateWaitableTimerExW(
+            std::ptr::null(),
+            std::ptr::null_mut(),
+            CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+            TIMER_ALL_ACCESS,
+        )
+    };
+    if timer != 0 {
+        return timer;
+    }
+
+    unsafe { CreateWaitableTimerW(std::ptr::null(), FALSE, std::ptr::null_mut()) }
+}
+
+fn duration_to_100ns_ticks(duration: Duration) -> i64 {
+    let ticks = duration.as_nanos().div_ceil(100).clamp(1, i64::MAX as u128);
+    ticks as i64
+}
 
 struct State {
     next_handle: Cell<HandleType>,
@@ -102,6 +201,7 @@ struct State {
     stopping: Cell<bool>,
 
     message_listeners: RefCell<Vec<Weak<dyn MessageListener>>>,
+    timer_waker: RefCell<Option<TimerWaker>>,
 }
 
 pub struct PollSession {
@@ -131,22 +231,26 @@ impl State {
             sender_callbacks: Arc::new(Mutex::new(Vec::new())),
             stopping: Cell::new(false),
             message_listeners: RefCell::new(Vec::new()),
+            timer_waker: RefCell::new(None),
         }
     }
 
     fn initialize(&self) {
-        self.hwnd.set(self.create_window(
+        let hwnd = self.create_window(
             "Irondash RunLoop Window",
             0, // WINDOW_STYLE
             0, // WINDOW_EX_STYLE
-        ));
+        );
+        self.hwnd.set(hwnd);
+        self.timer_waker.replace(Some(TimerWaker::new(hwnd)));
     }
 
     fn wake_up_at(&self, time: Instant) {
-        let wait_time = time.saturating_duration_since(Instant::now());
-        unsafe {
-            SetTimer(self.hwnd.get(), 1, wait_time.as_millis() as u32, None);
-        }
+        let timer_waker = self.timer_waker.borrow();
+        let Some(timer_waker) = timer_waker.as_ref() else {
+            return;
+        };
+        timer_waker.wake_up_at(time);
     }
 
     fn on_timer(&self) {
@@ -302,6 +406,7 @@ impl State {
 impl Drop for State {
     fn drop(&mut self) {
         unsafe {
+            self.timer_waker.take();
             DestroyWindow(self.hwnd.get());
         }
     }
@@ -311,6 +416,9 @@ impl WindowAdapter for State {
     fn wnd_proc(&self, hwnd: HWND, msg: u32, w_param: WPARAM, l_param: LPARAM) -> LRESULT {
         match msg {
             WM_TIMER => {
+                self.on_timer();
+            }
+            WM_RUNLOOP_TIMER => {
                 self.on_timer();
             }
             WM_USER => {
