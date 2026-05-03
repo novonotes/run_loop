@@ -620,7 +620,10 @@ mod tests {
     use std::{
         cell::RefCell,
         rc::Rc,
-        sync::{Arc, Mutex},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, Ordering},
+        },
         thread,
         time::{Duration, Instant},
     };
@@ -732,9 +735,21 @@ mod tests {
             let run_loop = Rc::new(RunLoop::current());
             let counter = Rc::new(Cell::new(0));
             let start = Instant::now();
+            let keep_posting = Arc::new(AtomicBool::new(true));
+            let sender = RunLoop::sender();
+            let keep_posting_for_thread = keep_posting.clone();
+
+            let posting_thread = thread::spawn(move || {
+                while keep_posting_for_thread.load(Ordering::SeqCst) {
+                    sender.send(|| {});
+                    thread::sleep(Duration::from_millis(1));
+                }
+            });
 
             schedule_tick(run_loop.clone(), counter.clone());
             RunLoop::current().delay(Duration::from_millis(900)).await;
+            keep_posting.store(false, Ordering::SeqCst);
+            posting_thread.join().unwrap();
 
             let elapsed = start.elapsed();
             let count = counter.get();
