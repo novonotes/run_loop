@@ -714,6 +714,43 @@ mod tests {
 
     #[test]
     #[serial]
+    #[cfg(target_os = "windows")]
+    fn test_windows_schedule_supports_33ms_cadence() {
+        use std::cell::Cell;
+
+        fn schedule_tick(run_loop: Rc<RunLoop>, counter: Rc<Cell<u32>>, start: Instant) {
+            let run_loop_for_callback = run_loop.clone();
+            run_loop
+                .schedule(Duration::from_millis(33), move || {
+                    counter.set(counter.get() + 1);
+                    if start.elapsed() < Duration::from_millis(1000) {
+                        schedule_tick(run_loop_for_callback.clone(), counter.clone(), start);
+                    } else {
+                        run_loop_for_callback.stop();
+                    }
+                })
+                .detach();
+        }
+
+        RunLoop::init().unwrap();
+        let run_loop = Rc::new(RunLoop::current());
+        let counter = Rc::new(Cell::new(0));
+        let start = Instant::now();
+
+        schedule_tick(run_loop.clone(), counter.clone(), start);
+        run_loop.run();
+
+        let elapsed = start.elapsed();
+        let count = counter.get();
+        assert!(
+            count >= 20,
+            "33ms schedule fired too slowly: count={count}, elapsed={elapsed:?}"
+        );
+        RunLoop::deinit();
+    }
+
+    #[test]
+    #[serial]
     fn test_init_deinit_reinit() {
         // First init
         RunLoop::init().unwrap();
