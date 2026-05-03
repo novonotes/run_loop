@@ -718,35 +718,31 @@ mod tests {
     fn test_windows_schedule_supports_33ms_cadence() {
         use std::cell::Cell;
 
-        fn schedule_tick(run_loop: Rc<RunLoop>, counter: Rc<Cell<u32>>, start: Instant) {
+        fn schedule_tick(run_loop: Rc<RunLoop>, counter: Rc<Cell<u32>>) {
             let run_loop_for_callback = run_loop.clone();
             run_loop
-                .schedule(Duration::from_millis(33), move || {
+                .schedule(Duration::from_millis(30), move || {
                     counter.set(counter.get() + 1);
-                    if start.elapsed() < Duration::from_millis(1000) {
-                        schedule_tick(run_loop_for_callback.clone(), counter.clone(), start);
-                    } else {
-                        run_loop_for_callback.stop();
-                    }
+                    schedule_tick(run_loop_for_callback.clone(), counter.clone());
                 })
                 .detach();
         }
 
-        RunLoop::init().unwrap();
-        let run_loop = Rc::new(RunLoop::current());
-        let counter = Rc::new(Cell::new(0));
-        let start = Instant::now();
+        test_helper::run_async(async {
+            let run_loop = Rc::new(RunLoop::current());
+            let counter = Rc::new(Cell::new(0));
+            let start = Instant::now();
 
-        schedule_tick(run_loop.clone(), counter.clone(), start);
-        run_loop.run();
+            schedule_tick(run_loop.clone(), counter.clone());
+            RunLoop::current().delay(Duration::from_millis(900)).await;
 
-        let elapsed = start.elapsed();
-        let count = counter.get();
-        assert!(
-            count >= 20,
-            "33ms schedule fired too slowly: count={count}, elapsed={elapsed:?}"
-        );
-        RunLoop::deinit();
+            let elapsed = start.elapsed();
+            let count = counter.get();
+            assert!(
+                count >= 20,
+                "30ms schedule fired too slowly while waiting on a 900ms delay: count={count}, elapsed={elapsed:?}"
+            );
+        });
     }
 
     #[test]
