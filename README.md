@@ -7,7 +7,7 @@ A fork of [irondash_run_loop](https://github.com/irondash/irondash/tree/main/run
 
 ## Purpose
 
-Designed for async task management in audio plugin development.
+Designed for async task management in audio application/plugin development.
 Provides access to the host application's main thread run loop without blocking it,
 enabling plugins to schedule and launch tasks on the main thread.
 
@@ -120,7 +120,17 @@ fn main() {
 
 ## Testing
 
-For information on using the test helpers and test harness, see the [Testing Guide](docs/testing.md).
+run_loop provides helpers and a test harness for testing code that uses it.
+For usage details, see the [Testing Guide](docs/testing.md).
+
+## Project Status
+
+The current status is **alpha**.
+NovoNotes uses it in production, but the public API is still stabilizing and may include breaking changes.
+
+## Installation
+
+- The Rust crate is not published to crates.io. Use it with a pinned `git` + `rev`.
 
 ## License
 
