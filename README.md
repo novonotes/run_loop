@@ -1,4 +1,13 @@
-# novonotes_run_loop
+# novonotes_run_loop has moved to novonotes/wxp
+
+> [!IMPORTANT]
+> **This repository is archived and no longer maintained.**
+>
+> Go to **[`novonotes/wxp/crates/run_loop`](https://github.com/novonotes/wxp/tree/main/crates/run_loop)**
+> for the latest source, issues, and pull requests.
+>
+> New dependency pins should use the `novonotes_run_loop` package from
+> [`novonotes/wxp`](https://github.com/novonotes/wxp), not this repository.
 
 A platform-independent run loop interface for Rust.
 A fork of [irondash_run_loop](https://github.com/irondash/irondash/tree/main/run_loop) with enhanced safety and error handling for DLL environments.
@@ -131,6 +140,15 @@ NovoNotes uses it in production, but the public API is still stabilizing and may
 ## Installation
 
 - The Rust crate is not published to crates.io. Use it with a pinned `git` + `rev`.
+
+## Installation
+
+Use the `novonotes_run_loop` package from the `novonotes/wxp` monorepo:
+
+```toml
+[dependencies]
+novonotes_run_loop = { git = "https://github.com/novonotes/wxp.git", package = "novonotes_run_loop", rev = "<latest commit hash on main branch>" }
+```
 
 ## License
 
