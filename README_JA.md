@@ -1,4 +1,15 @@
-# novonotes_run_loop
+# novonotes_run_loop は novonotes/wxp に移動しました
+
+> [!IMPORTANT]
+> **このリポジトリは archive され、今後は更新されません。**
+>
+> 最新のソース、issue、pull request は
+> **[`novonotes/wxp/crates/run_loop`](https://github.com/novonotes/wxp/tree/main/crates/run_loop)**
+> を参照してください。
+>
+> 新しい依存指定では、このリポジトリではなく
+> [`novonotes/wxp`](https://github.com/novonotes/wxp) の `novonotes_run_loop`
+> package を使ってください。
 
 プラットフォーム独立なランループインターフェースを提供する Rust クレート。
 [irondash_run_loop](https://github.com/irondash/irondash/tree/main/run_loop) をベースに、DLL 環境での安全性やエラーハンドリングなどを強化したフォークです。
@@ -119,6 +130,15 @@ fn main() {
 ## テスト
 
 run_loop のテストヘルパーとテストハーネスの使い方については、[テストガイド](docs/testing.md)を参照してください。
+
+## インストール方法
+
+`novonotes/wxp` monorepo の `novonotes_run_loop` package を利用してください。
+
+```toml
+[dependencies]
+novonotes_run_loop = { git = "https://github.com/novonotes/wxp.git", package = "novonotes_run_loop", rev = "<main ブランチの最新コミットハッシュ>" }
+```
 
 ## ライセンス
 
